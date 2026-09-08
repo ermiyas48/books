@@ -1,228 +1,285 @@
-# Daily ChatGPT → Telegram Automation Research
+# Daily ChatGPT → Telegram Automation — Living Research & Implementation Plan
 
-**Goal:** Every day, ChatGPT itself researches current Ethiopian education/university news, writes the compact briefing text, and the exact text is delivered automatically to Telegram.
+**Last researched:** 2026-09-08  
+**Goal:** Every day, ChatGPT itself researches current Ethiopia/university news, writes a very short briefing, and the resulting text reaches Telegram chat `6725547584`. The AI writer must be ChatGPT; replacing it with a static RSS script is not acceptable.
 
-**Repository:** `ermiyas48/books`
-**Research status:** living document; update this page whenever new alternatives, connectors, schedulers, or proven implementations are discovered.
-**Last researched:** 2026-09-08
+## 1. Exact target architecture
 
-## 1. Target architecture
+```text
+Daily scheduler
+    ↓
+ChatGPT Scheduled Task / ChatGPT Work
+    ↓
+Web research + synthesis
+    ↓
+Compact final text (3–5 bullets)
+    ↓
+Delivery bridge
+    ↓
+Telegram bot → chat 6725547584
+```
 
-Preferred:
+The hard engineering distinction is **generation vs delivery**. Telegram MCP/Bot API can deliver text, but it does not by itself wake this ChatGPT runtime every morning. A scheduler can trigger a separate AI/API workflow, but that is not the same as ChatGPT Scheduled Tasks. Therefore the preferred design keeps ChatGPT as the generator and uses Android as the local delivery bridge.
 
-`Daily scheduler → ChatGPT scheduled task → fresh web research → compact briefing text → Telegram delivery`
+## 2. Current best solution: ChatGPT Task → Android notification → Automate → Telegram Bot API
 
-The critical requirement is that the **AI-written text remains the source of truth**. A deterministic RSS script or separate news model is only a fallback and should not be described as ChatGPT.
+### Why this is currently #1
+- ChatGPT Scheduled Tasks can run one-time or recurring tasks and can perform recurring work and web-based monitoring. OpenAI documents daily recurring tasks for Free/Go and more frequent schedules for eligible paid plans. See: https://help.openai.com/en/articles/10291617
+- On Android, ChatGPT task notifications can be delivered as mobile push notifications when notification permission is enabled.
+- Android's NotificationListenerService is specifically designed to receive posted notifications. See: https://developer.android.com/reference/android/service/notification/NotificationListenerService
+- Automate has a `Notification posted` block that exposes the notification title and message as variables, and an `HTTP request` block capable of POSTing data. See: https://llamalab.com/automate/doc/block/notification_posted.html and https://llamalab.com/automate/doc/block/http_request.html
+- Telegram's Bot API can then receive the generated text through `sendMessage`.
 
-## 2. ChatGPT-native scheduling
+### Required user-side setup
+1. Install/update Automate on the Samsung M12.
+2. Give Automate notification access.
+3. Create one ChatGPT Scheduled Task with the exact briefing prompt.
+4. Allow ChatGPT notifications.
+5. Create one Automate flow:
+   - Notification posted
+   - filter package = ChatGPT
+   - filter for the task notification/title if necessary
+   - extract `Message`
+   - HTTP POST to Telegram Bot API `sendMessage`
+   - use chat ID `6725547584`
+6. Enter the Telegram bot token into Automate's protected credential/keychain mechanism if available; never commit it to GitHub.
+7. Disable battery optimization for ChatGPT and Automate on the M12 so Android does not kill the bridge.
+8. Run an end-to-end test with a short test task before relying on the daily task.
 
-OpenAI documents Scheduled Tasks as recurring work that ChatGPT runs later, including daily updates. Tasks are supported on Web, iOS, Android, and macOS; task completion can generate push/email notifications. Free and Go plans can run a recurring task no more than once per day; paid eligible plans allow more frequent schedules. OpenAI also documents event-triggered tasks, but those are separate and currently support Gmail, Slack, and GitHub activity rather than arbitrary Telegram webhooks.
+### Important uncertainty to test
+The exact ChatGPT notification payload can vary by app version and task notification type. Automate can capture notification title/message, but the full task answer must be verified on the actual phone. If the notification only contains a completion notice and not the full generated text, switch to a second bridge described below instead of pretending the payload contains the answer.
 
-Sources:
-- https://help.openai.com/en/articles/10291617
-- https://help.openai.com/en/articles/6825453-
+## 3. Strong fallback: ChatGPT Task → visible result → Android/Tasker/Automate bridge
 
-Important limitation: the public ChatGPT Scheduled Task interface does not expose a generic outbound webhook containing the generated answer. Therefore another bridge is needed for direct Telegram delivery.
+If the ChatGPT mobile notification does not include the full answer, investigate Android accessibility/UI extraction as a fallback. Automate has interface/accessibility blocks and can interact with visible app UI. This is less robust than notification extraction because UI layout can change.
 
-## 3. Telegram delivery routes
+Use only as a fallback; do not make screen scraping the primary architecture.
 
-### A. Existing Composio Telegram connection — BEST current delivery connector
+## 4. Strong fallback: ChatGPT Task → email notification → Gmail/automation → Telegram
 
-Already connected and verified in this environment.
+OpenAI Scheduled Tasks support Push and Email notifications. However, task email behavior must be tested: a completion notification is not guaranteed to contain the complete task response. Therefore email should be treated as a trigger/heartbeat, not assumed to be the content transport.
 
-- Toolkit: Telegram
-- Connection alias: `telegram_yere-gyle`
-- Bot: `ErmiAgentBot`
-- Destination: configured private chat
-- Tool: `TELEGRAM_SEND_MESSAGE`
+If the email contains the full generated text in the current implementation, Gmail can become a reliable bridge. If it only says the task finished, this route cannot satisfy the exact requirement without another way to retrieve the task result.
 
-This is the preferred direct delivery path whenever the automation runtime can invoke Composio.
+## 5. Direct ChatGPT Scheduled Task → Telegram connector
 
-Composio also supports hosted MCP sessions and dynamic tool access across many apps.
+This would be the cleanest architecture if ChatGPT Scheduled Tasks could directly invoke Telegram as a supported connected app. Current OpenAI documentation lists supported event-triggered apps such as Gmail, Slack, and GitHub; Telegram is not listed there. Scheduled Tasks also do not expose a generic arbitrary MCP webhook/action interface in the documented feature set.
 
-Source:
-- https://github.com/ComposioHQ/composio
+Conclusion: **do not assume the existing Composio Telegram connection can automatically be called by a ChatGPT Scheduled Task.** The fact that ChatGPT can use a connector interactively does not prove scheduled tasks can invoke it unattended.
 
-### B. Direct Telegram Bot API MCP servers
+## 6. Composio Telegram
 
-These use a BotFather bot token and are appropriate when the runtime can host an MCP server.
+Existing connected Telegram account: `telegram_yere-gyle`.
 
-1. **TONresistor/telegram-mcp** — production-oriented Bot API server; 162 Bot API methods, token-optimized meta mode, retries/rate limiting/health metrics. Meta mode exposes 2 tools: `telegram_find` and `telegram_call`; standard mode exposes the full method set.
-   - https://github.com/TONresistor/telegram-mcp
-   - Strong option for a self-hosted bot bridge.
+Composio provides managed Telegram integration through its tool/MCP layer and can send Telegram messages. This is excellent for interactive ChatGPT → Telegram delivery, but the remaining question is whether a currently exposed Composio scheduler/trigger can independently wake a ChatGPT generation job every day. The available connector search did not expose a dependable recurring scheduler that can execute this exact ChatGPT-runtime workflow.
 
-2. **NexusX-MCP/telegram-mcp-server** — Bot API MCP service with `get_bot_info`, `send_message`, and `get_updates`.
-   - https://github.com/NexusX-MCP/telegram-mcp-server
-   - Simple, focused bot bridge.
+Composio is therefore retained as the **interactive/manual delivery path and future upgrade path**, not falsely declared to be the daily scheduler.
 
-3. **guangxiangdebizi/telegram-mcp** — comprehensive Bot API MCP server; supports stdio and an SSE mode and exposes messaging/media/forward/delete/chat operations.
-   - https://github.com/guangxiangdebizi/telegram-mcp
-   - Useful when a remote HTTP/SSE MCP transport is required.
+Reference: https://composio.dev/content/telegram-mcp-connect-your-ai-to-your-telegram-chats
 
-4. **py2755/aiogram-mcp** — turns an existing aiogram Telegram bot into an MCP server; documented as 30 tools, 7 resources, 3 prompts, and real-time event notifications.
-   - https://github.com/py2755/aiogram-mcp
-   - Excellent choice if an existing aiogram bot is already part of the architecture.
+## 7. Telegram MCP ecosystem researched
 
-### C. Telegram user-account MCP servers (MTProto/Telethon/GramJS)
+### Bot API MCP servers — best when the destination is a bot
 
-These are not bot connectors. They operate as the user's Telegram account and can access personal chats/groups/channels that a bot cannot.
+1. **timoncool/telegram-api-mcp** — 169 Telegram Bot API methods, meta mode, retries, rate limiting, circuit breaker, token masking. https://github.com/timoncool/telegram-api-mcp
+2. **TONresistor/telegram-mcp** — 161 Bot API methods, meta mode with `telegram_find` + `telegram_call`. https://github.com/TONresistor/telegram-mcp
+3. **FantomaSkaRus1/telegram-bot-mcp** — 174 Bot API tools. https://github.com/FantomaSkaRus1/telegram-bot-mcp
+4. **node2flow-th/telegram-bot-mcp-community** — 27 Bot API tools including messages, webhooks and files. https://github.com/node2flow-th/telegram-bot-mcp-community
+5. **NexusX-MCP/telegram-mcp-server** — focused Bot API server with send_message/get_updates/get_bot_info. https://github.com/NexusX-MCP/telegram-mcp-server
+6. **guangxiangdebizi/telegram-mcp** — broad Bot API interface with messaging, media and chat management. https://github.com/guangxiangdebizi/telegram-mcp
+7. **abhinavkale-dev/telegram-mcp-server** — simple Bot API MCP server. https://github.com/abhinavkale-dev/telegram-mcp-server
 
-1. **chigwell/telegram-mcp** — Telethon/MTProto, broad account/chat/media/admin capabilities, Docker support and active maintenance.
-   - https://github.com/chigwell/telegram-mcp
-   - Good general-purpose user-account MCP.
+For this project, these are mostly **delivery engines**, not schedulers or ChatGPT task triggers.
 
-2. **TONresistor/telethon-mcp** — production-oriented Telethon MCP with 6 meta-tools + raw Telegram API access covering 742 methods, persistent caching, rate-limit protection.
-   - https://github.com/TONresistor/telethon-mcp
-   - Most powerful user-account API coverage among the researched projects.
+### MTProto/user-account MCP servers — powerful but unnecessary for this goal
 
-3. **Matancoo/telegram-mcp** — Telethon + FastMCP, documented as 89 tools across 13 categories.
-   - https://github.com/Matancoo/telegram-mcp
-   - Feature-rich but newer/smaller project.
+1. **tensakulabs/telegram-mcp** — minimal Telethon/MTProto server. https://github.com/tensakulabs/telegram-mcp
+2. **DmitryKhali/telegram-mcp** — personal-account Telegram access using Telethon. https://github.com/DmitryKhali/telegram-mcp
+3. **TONresistor/telethon-mcp** — broad Telethon API access with meta tools and rate-limit protection. https://github.com/TONresistor/telethon-mcp
+4. **Matancoo/telegram-mcp** — 89 Telethon/MTProto tools. https://github.com/Matancoo/telegram-mcp
+5. **Shaan-alpha/telegram-mcp** — local Telethon MCP with read/write tools. https://github.com/Shaan-alpha/telegram-mcp
+6. **Muhammadyunusxon/telegram-mcp** — personal Telegram control including scheduled messages. https://github.com/Muhammadyunusxon/telegram-mcp
+7. **mcp-telegram / @overpod/mcp-telegram** — GramJS/MTProto userbot MCP with messages, media, contacts, groups, sessions and privacy. https://github.com/mcp-telegram
 
-4. **newink/telegram-mcp** — MTProto personal-account connector for dialogs, messages, search, media, etc.
-   - https://github.com/newink/telegram-mcp
-   - Good when the AI needs access to real account history.
+MTProto is powerful when the AI must operate as the user's personal Telegram account. For this project a Bot API is simpler and safer because the destination is a single bot chat.
 
-5. **DmitryKhali/telegram-mcp** — Telethon user account; send operations require explicit confirmation in the documented implementation.
-   - https://github.com/DmitryKhali/telegram-mcp
-   - Better for human-in-the-loop use than unattended sending.
+## 8. Other automation platforms researched
 
-6. **jgalea/telegram-mcp** — Telethon/MTProto with about 40 tools including scheduling, reactions, admin operations and passive SQLite caching.
-   - https://github.com/jgalea/telegram-mcp/blob/main/README.md
-   - Broad feature set; evaluate maintenance before production deployment.
+### Zapier — technically capable, but changes the AI architecture
+Zapier has Schedule by Zapier + Telegram and also Telegram + ChatGPT (OpenAI). It supports daily scheduled Telegram messages and exposes Telegram/ChatGPT through Zapier MCP. Sources:
+- https://zapier.com/apps/schedule/integrations/telegram
+- https://zapier.com/apps/telegram/integrations/chatgpt
 
-7. **m0n0x41d/telegram-mcp** — Telethon-based personal-account MCP with read/send/search/media operations and resumable scan workflow tools.
-   - https://github.com/m0n0x41d/telegram-mcp
-   - Good for structured message ingestion/search as well as sending.
+Architecture would be:
+`Zapier schedule → OpenAI/ChatGPT action → Telegram`.
 
-8. **nguyenvanduocit/telegram-mcp** — Go + gotd/td, documented as 59 tools plus compound workflow tools and prompts; supports stdio and HTTP transports and Docker.
-   - https://github.com/nguyenvanduocit/telegram-mcp
-   - Attractive for a lightweight remote server without Python.
+This is a proven automation architecture, but the AI step is an OpenAI API/Zapier action, not the exact ChatGPT Scheduled Task runtime. It is therefore the **best cloud alternative if exact ChatGPT runtime is relaxed**.
 
-9. **tamlut-modnys/telegram-mcp-server** — Telethon/FastMCP Telegram MCP server with list/read/search/send operations and optional SSE debugging mode.
-   - https://github.com/tamlut-modnys/telegram-mcp-server
-   - Useful as a simple server reference.
+### n8n
+Self-hosted/cloud n8n can combine Schedule Trigger → web research/API → LLM → Telegram. This is excellent if the AI can be an API model. It does not automatically turn a ChatGPT consumer scheduled task into a callable API endpoint.
 
-10. **Shaan-alpha/telegram-mcp** — small local Telethon MCP: `get_me`, list chats, history, search and send. Uses a reusable session string.
-    - https://github.com/Shaan-alpha/telegram-mcp
-    - Very simple to audit/modify.
+### Pipedream
+Pipedream can schedule workflows and call APIs/Telegram. Same limitation: excellent for API-based AI generation, not a documented direct trigger for a ChatGPT consumer task.
 
-11. **prem-research/telegram-mcp** — Telethon-based MCP with a separate HTTP server and MCP server, including `send_message` and unread-message retrieval.
-    - https://github.com/prem-research/telegram-mcp
-    - Interesting for splitting HTTP collection from MCP exposure.
+### Make
+Make can run scheduled scenarios and Telegram actions. Same architectural limitation: it is an external automation/AI workflow, not ChatGPT Scheduled Tasks itself.
 
-12. **tensakulabs/telegram-mcp** — minimal Telethon/MTProto MCP focused on two tools (`send_message`, `get_history`) for bot interaction.
-    - https://github.com/tensakulabs/telegram-mcp
-    - Useful as a tiny learning/reference implementation.
+### GitHub Actions
+GitHub Actions supports scheduled workflows with cron and IANA timezone-aware scheduling. The shortest supported schedule interval is 5 minutes. Source: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 
-13. **sparfenyuk/mcp-telegram** — MTProto MCP bridge; researched README documents mostly read-only access.
-    - https://github.com/sparfenyuk/mcp-telegram
-    - Not suitable as the primary Telegram sender unless write support is added.
+It is good for deterministic RSS/API pipelines. It is **not** currently a direct way to invoke ChatGPT consumer Scheduled Tasks. GitHub Models also cannot be treated as the replacement for ChatGPT because that product was retired.
 
-14. **mcp-telegram/mcp-telegram** — GramJS/MTProto hosted and self-hosted project; documented as supporting messages, media, reactions, polls, stickers, contacts, groups, sessions, privacy and more, with a hosted cloud version aimed at ChatGPT/Claude-compatible clients.
-    - https://github.com/mcp-telegram/mcp-telegram
-    - Potentially the most interesting hosted user-account MCP route to investigate further.
+### Cloudflare Workers / AWS / Firebase / generic cron
+All can schedule a webhook or serverless function and call Telegram Bot API. They are reliable delivery/scheduling infrastructure but require an AI API or another callable generation endpoint. They do not natively wake a ChatGPT consumer task.
 
-## 4. Telegram client libraries useful for custom bridges
+## 9. Android/Termux alternatives
 
-- **Telethon** — mature Python MTProto client; can send messages and supports bots as well.
-  - https://github.com/LonamiWebs/telethon
-- **GramJS** — JavaScript/Node MTProto client. The upstream repository is archived as of July 14, 2026; its README directs users toward the actively maintained `teleproto` fork.
-  - https://github.com/gram-js/gramjs
+### Automate
+Best current bridge for this phone because it can consume Android notifications and make HTTP requests. It can also use cloud messaging and has community flows for Telegram integration.
 
-For a new Node-based implementation, prefer an actively maintained successor rather than archived GramJS unless compatibility requires it.
+A community Automate flow already demonstrates Telegram ↔ Android automation using a Telegram bot and Google cloud messages: https://llamalab.com/automate/community/flows/41311
 
-## 5. Scheduler / orchestration alternatives
+### Tasker + Termux:Tasker
+Termux:Tasker lets Tasker execute Termux commands and scripts. Source: https://github.com/termux/termux-tasker
 
-### 5.1 ChatGPT Scheduled Tasks
+Potential architecture:
+`ChatGPT notification → Tasker → Termux → curl Telegram Bot API`.
 
-**Best match for the requirement that ChatGPT writes the briefing.** It natively runs recurring prompts and can search the web for monitoring/update tasks. Main missing interface: no documented arbitrary webhook carrying the generated output directly to Telegram.
+This is highly controllable but adds more moving parts than Automate.
 
-### 5.2 Composio
+### Termux direct polling
+A Termux script can poll an external source or Telegram, but it cannot magically obtain a ChatGPT scheduled-task result unless an accessible result endpoint exists. Therefore Termux is a delivery/runtime component, not the missing ChatGPT trigger.
 
-Composio provides authenticated tool access, triggers and hosted MCP sessions. It already has the Telegram and Perplexity connections in this environment. Research found recurring webhook scheduling via a separate `cronfree_time_scheduler` connector, but that connector is not currently authenticated here.
+### Native Android NotificationListenerService
+A custom app could capture ChatGPT notifications directly using Android's NotificationListenerService and call Telegram. This is the most controllable long-term bridge but requires writing/maintaining an Android app. Source: https://developer.android.com/reference/android/service/notification/NotificationListenerService
 
-Useful conceptual path:
-`Cron/Webhook scheduler → AI action → Telegram`
+## 10. Account/credential matrix
 
-Source:
-- https://github.com/ComposioHQ/composio
+| Component | New account needed? | What must be connected |
+|---|---|---|
+| ChatGPT Scheduled Task | No | Existing ChatGPT account; task enabled |
+| Automate | Usually no separate account for local flows | Notification access; battery exemption |
+| Telegram bot | Already exists | Bot token + chat ID |
+| Composio Telegram | Already connected | Existing `telegram_yere-gyle` connection |
+| GitHub | Already connected | `ermiyas48/books` |
+| Zapier | Only if choosing cloud fallback | Telegram + OpenAI/Zapier connections |
+| n8n | Only if choosing n8n | Telegram + model/API credentials |
+| Tasker | Only if choosing Tasker bridge | Termux:Tasker + RUN_COMMAND |
+| Telegram MTProto MCP | Only if needing user-account access | `api_id`, `api_hash`, user session |
 
-### 5.3 CronFree recurring webhook scheduler
+**For the preferred architecture, no new cloud account should be necessary.** The only likely new app is Automate if it is not already installed.
 
-Composio tool discovery exposes `CRONFREE_TIME_SCHEDULER_CREATE_RECURRING_WEBHOOK_SCHEDULE`, which can repeatedly POST to a public HTTPS webhook on selected weekdays/months/hours/minutes/timezone. This is promising as the scheduler half of a future bridge, but it still requires a webhook endpoint that can invoke ChatGPT or an equivalent AI runtime.
+## 11. Failure scenarios and recovery
 
-### 5.4 GitHub Actions
+### A. ChatGPT task never runs
+Check Scheduled page, task active state, task limit, notifications, and whether the associated chat was deleted. OpenAI documents task limits and automatic pausing conditions.
 
-GitHub Actions can schedule workflows with cron and timezone. It is excellent for always-on deterministic jobs, but it is **not ChatGPT itself**. A true ChatGPT-generated daily briefing would require a compatible external AI API or another way to invoke ChatGPT.
+### B. Task runs but Android receives no notification
+Check ChatGPT notification permission, Android notification channel, battery optimization, Do Not Disturb, and whether the task notification preference is enabled.
 
-Existing repo `ermiyas48/books` is suitable as a control/configuration repository.
+### C. Notification arrives but contains no full briefing
+This is the critical test. Do not continue blindly. Switch to email/result retrieval or a different bridge.
 
-### 5.5 Android/Termux scheduler
+### D. Automate receives the notification but sends duplicate Telegram messages
+Deduplicate using notification ID/message hash and store the last processed ID locally.
 
-The existing phone environment is useful because it can stay close to the Telegram bot and can run Termux/Automate workflows. The key architecture is:
-`ChatGPT task notification → Android notification bridge → Termux/Automate → Telegram`
+### E. Telegram returns 429
+Honor `retry_after` and retry with backoff. Mature Bot API MCP implementations already implement this pattern.
 
-This retains ChatGPT as the writer but depends on Android reliably exposing the full generated text in the notification. This must be tested on the actual device; notification truncation is the main risk.
+### F. Bot token exposed
+Immediately rotate it in BotFather. Never put it in GitHub source, markdown, prompts, or logs.
 
-### 5.6 External automation platforms
+### G. Android kills Automate
+Remove battery optimization, allow background activity, allow notification access, and test after screen-off/reboot.
 
-Candidate classes worth evaluating if direct ChatGPT webhooks remain unavailable:
-- n8n
-- Activepieces
-- Pipedream
-- Make
-- Zapier
-- Node-RED
-- Cloudflare Workers + scheduled/HTTP trigger
-- Google Apps Script / Gmail relay
+### H. ChatGPT changes notification format
+Keep a fallback filter based on package + title and avoid brittle exact message parsing. If necessary, use UI/accessibility extraction as the second bridge.
 
-Key criterion: they must receive the **actual ChatGPT-generated text**, not merely a 'task completed' notice.
+### I. Internet unavailable at run time
+The ChatGPT task cannot research current news without network access. Automate should queue/retry delivery only after the notification exists.
 
-## 6. Approaches rejected or downgraded
+## 12. Briefing generation specification
 
-### Email-only ChatGPT task notification
+The daily task must tell ChatGPT:
 
-Not sufficient as the primary bridge unless the actual generated task result is included in the email body. OpenAI's documented task notification settings support push/email notifications, but there is no documented guarantee that a task's full generated result is available as an email payload suitable for extraction.
+- Research current Ethiopia news, prioritizing Ethiopian universities and education.
+- Prioritize AASTU, AAU, admissions, entrance exams, application deadlines, exam venues, university announcements, Ministry of Education announcements, and major breaking Ethiopian news.
+- Prefer official university/government sources and reliable Ethiopian reporting.
+- Avoid repeating yesterday's stories unless there is a meaningful update.
+- Produce only 3–5 highest-value items.
+- Each item: one short headline + one concise sentence.
+- Include a source name/link when useful.
+- Put urgent items first.
+- End with a one-line "Watch:" item only when something important is developing.
+- No filler, no long explanation, no generic world news unless it materially affects Ethiopia.
 
-### Deterministic RSS → Telegram
+## 13. Recommended implementation order
 
-Works technically, but violates the user's core requirement because the final text is produced by a script rather than ChatGPT. Keep only as an emergency fallback.
+### Phase 1 — prove ChatGPT generation
+Create a daily ChatGPT Scheduled Task and run it manually once. Confirm the generated text is exactly the desired compact briefing.
 
-### Perplexity as permanent writer
+### Phase 2 — prove notification transport
+Enable ChatGPT push notifications and create a temporary test task whose output is unmistakable. Observe the Android notification and verify Automate's `Message` variable contains the full result.
 
-Perplexity is connected and can do excellent web-grounded research, but the requested system is explicitly **ChatGPT writes the text**. Perplexity can be a research fallback or auxiliary source, not the default writer.
+### Phase 3 — Telegram delivery
+Create the Automate HTTP request that calls Telegram Bot API `sendMessage`. Use the secure credential/keychain mechanism where possible. Never store the bot token in GitHub.
 
-## 7. Best architecture ranking
+### Phase 4 — end-to-end test
+Run a manual task → notification → Automate → Telegram. Confirm one message, correct formatting, correct destination, and no duplicate.
 
-| Rank | Architecture | ChatGPT writes final text? | Fully unattended? | Complexity | Verdict |
-|---|---|---:|---:|---:|---|
-| 1 | ChatGPT Scheduled Task → Android notification → Automate/Termux → Telegram | Yes | Yes, if Android task/notification is reliable | Medium | **Best practical route now** |
-| 2 | ChatGPT Scheduled Task → first-class outbound webhook → Telegram/Composio | Yes | Yes | Low | **Best overall if/when available** |
-| 3 | ChatGPT Scheduled Task → email/result relay → automation → Telegram | Maybe | Yes | Medium | Needs verified full-result email payload |
-| 4 | CronFree webhook → external ChatGPT-capable runtime → Telegram | Potentially | Yes | High | Strong infrastructure route, but needs ChatGPT invocation endpoint |
-| 5 | GitHub Actions → external AI API → Telegram | No (unless API is ChatGPT-compatible and intentionally used) | Yes | Medium | Good fallback, not exact requirement |
-| 6 | Perplexity scheduled/research automation → Telegram | No | Yes | Low/Medium | Research fallback only |
-| 7 | RSS-only → Telegram | No | Yes | Low | Emergency fallback only |
+### Phase 5 — reliability hardening
+Add duplicate suppression, retry/backoff, battery exemption, reboot test, offline/reconnect test, and a failure notification/log.
 
-## 8. Current environment state
+### Phase 6 — only then enable the daily production schedule
+Do not call it finished until at least one real end-to-end daily-style run succeeds.
 
-- Telegram Composio connection is active and tested.
-- GitHub Composio connection is active and has admin access to `ermiyas48/books`.
-- Perplexity Composio connection is active.
-- The repository currently had no workflow runs or repository secrets at the time of this research.
-- The daily-briefing skill is saved in the ChatGPT Library.
-- This page is now the living GitHub research log.
+## 14. Decision ranking
 
-## 9. Next investigations
+1. **ChatGPT Scheduled Task → Android notification → Automate → Telegram Bot API** — best match to exact requirement; ChatGPT remains the writer.
+2. **ChatGPT Scheduled Task → Android notification → custom native NotificationListener → Telegram** — most robust custom implementation, more engineering.
+3. **ChatGPT Scheduled Task → Tasker → Termux → Telegram** — powerful and scriptable, more moving parts.
+4. **ChatGPT Scheduled Task → email/result bridge → Telegram** — worth testing, but depends on whether the email contains the actual answer.
+5. **Zapier Schedule → OpenAI/ChatGPT action → Telegram** — strongest cloud alternative if using an OpenAI API action instead of the exact ChatGPT Scheduled Task runtime.
+6. **n8n/Make/Pipedream → LLM/API → Telegram** — excellent self-hosted/cloud alternatives, but not exact ChatGPT-runtime generation.
+7. **GitHub Actions → RSS/API → Telegram** — reliable deterministic fallback, but not ChatGPT-generated research.
+8. **MTProto Telegram MCP** — unnecessary for a single bot destination; reserve for personal-account Telegram automation.
 
-1. Determine whether ChatGPT Scheduled Tasks expose the full result through Android notification text on the current Android app version.
-2. Build a minimal Automate/Termux notification-to-Telegram proof of concept and test maximum text length/truncation.
-3. Investigate whether the hosted `mcp-telegram` service can be connected directly as an MCP endpoint to an AI client that can run scheduled tasks.
-4. Investigate Composio/Rube custom MCP + CronFree webhook combinations for an end-to-end hosted bridge.
-5. Compare n8n, Activepieces, Pipedream, Make, and Cloudflare Worker patterns specifically for forwarding a ChatGPT task result.
-6. Keep this page updated with every materially new connector, scheduler, protocol, or proven implementation.
+## 15. Bottom line
 
-## 10. Research rule for future sessions
+The project should not be redesigned around another AI merely because Telegram MCP is easy. Telegram is the delivery layer. ChatGPT is the research/writing layer. The missing bridge is scheduling/result transport.
 
-Whenever this automation is discussed, inspect this page first, then research what has changed since its last update. Append new findings rather than replacing old evidence. Never claim an automation path is live until a real end-to-end test proves: **scheduled trigger → ChatGPT-generated text → Telegram message received**.
+The most realistic proven solution on the existing Samsung M12 is therefore:
+
+**ChatGPT Scheduled Task → Android push notification → Automate notification listener → Telegram Bot API.**
+
+The next action requiring the user's device is to create the ChatGPT task and Automate flow and perform the first end-to-end notification-content test. If that test proves the push notification contains the full task answer, no new cloud account is required. If it does not, move immediately to the Android UI/result bridge or a cloud automation alternative.
+
+## 16. Research sources
+
+- OpenAI Scheduled Tasks: https://help.openai.com/en/articles/10291617
+- OpenAI ChatGPT agent scheduling: https://help.openai.com/en/articles/11752874
+- OpenAI Work / scheduled tasks: https://help.openai.com/en/articles/20001275/
+- OpenAI release notes: https://help.openai.com/en/articles/6825453
+- Telegram Bot API: https://core.telegram.org/bots/api
+- Composio Telegram MCP: https://composio.dev/content/telegram-mcp-connect-your-ai-to-your-telegram-chats
+- Zapier Telegram: https://zapier.com/apps/telegram/integrations
+- Zapier Schedule + Telegram: https://zapier.com/apps/schedule/integrations/telegram
+- Zapier Telegram + ChatGPT: https://zapier.com/apps/telegram/integrations/chatgpt
+- Android NotificationListenerService: https://developer.android.com/reference/android/service/notification/NotificationListenerService
+- Automate Notification posted: https://llamalab.com/automate/doc/block/notification_posted.html
+- Automate HTTP request: https://llamalab.com/automate/doc/block/http_request.html
+- Automate community Telegram integration: https://llamalab.com/automate/community/flows/41311
+- Termux:Tasker: https://github.com/termux/termux-tasker
+- GramJS: https://github.com/gram-js/gramjs
+- Telegram Bot API MCP: https://github.com/timoncool/telegram-api-mcp
+- Telegram Bot API MCP: https://github.com/TONresistor/telegram-mcp
+- Telegram Bot MCP: https://github.com/FantomaSkaRus1/telegram-bot-mcp
+- Telegram Bot MCP: https://github.com/node2flow-th/telegram-bot-mcp-community
+- Telethon MCP: https://github.com/TONresistor/telethon-mcp
+- Telegram MTProto MCP: https://github.com/DmitryKhali/telegram-mcp
+- GramJS/MTProto MCP: https://github.com/mcp-telegram
+- GitHub Actions scheduling: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+
+## 17. Living-research rule
+
+Whenever this project is researched again, update this page first or immediately afterward. Add newly discovered MCP servers, schedulers, APIs, connectors, pricing/limits, failure modes, and implementation results. Mark claims as **verified**, **tested**, **documented**, or **unverified** rather than assuming that a tool's existence proves the full workflow works.
